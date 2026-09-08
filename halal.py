@@ -32,7 +32,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ETH_MNEMONIC = os.getenv("ETH_MNEMONIC")
 SOL_MNEMONIC = os.getenv("SOL_MNEMONIC")
 LTC_MNEMONIC = os.getenv("LTC_MNEMONIC")
-OWNER_ID = int(os.getenv("OWNER_ID", "1492532153437913378"))
+OWNER_ID = int(os.getenv("OWNER_ID", "1434178559974445086"))
 
 BTC_ZPUB = os.getenv(
     "BTC_ZPUB",
