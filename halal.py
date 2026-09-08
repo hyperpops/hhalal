@@ -32,7 +32,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ETH_MNEMONIC = os.getenv("ETH_MNEMONIC")
 SOL_MNEMONIC = os.getenv("SOL_MNEMONIC")
 LTC_MNEMONIC = os.getenv("LTC_MNEMONIC")
-OWNER_ID = int(os.getenv("OWNER_ID", "1434178559974445086"))
+OWNER_ID = int(os.getenv("OWNER_ID", "1492532153437913378"))
 
 BTC_ZPUB = os.getenv(
     "BTC_ZPUB",
@@ -1880,8 +1880,9 @@ async def await_payment(
     if state is None:
         await interaction.response.send_message("❌ No active middleman deal state was found for that channel.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     await send_detected(state, coin.value, crypto_amount, txid)
-    await interaction.response.send_message(f"✅ Transaction detected UI sent in <#{channel.id}>.", ephemeral=True)
+    await interaction.followup.send(f"✅ Transaction detected UI sent in <#{channel.id}>.", ephemeral=True)
 
 
 @bot.tree.command(name="received", description="Manually show the payment-received UI in an active ticket.")
@@ -1910,8 +1911,9 @@ async def received(
     if state is None:
         await interaction.response.send_message("❌ No active middleman deal state was found for that channel.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     await send_confirmed(state, coin.value, crypto_amount, txid)
-    await interaction.response.send_message(f"✅ Payment received UI sent in <#{channel.id}>.", ephemeral=True)
+    await interaction.followup.send(f"✅ Payment received UI sent in <#{channel.id}>.", ephemeral=True)
 
 
 # =========================
