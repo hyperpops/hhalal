@@ -1,3 +1,4 @@
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -143,57 +144,14 @@ def next_ticket_number():
 
 async def safe_get_json(session, url, label):
     try:
-        async with session.get(url, timeout=30) as response:
-            text = await response.text()
-
-            if response.status == 429:
-                print(f"{label}: rate limited, waiting 120 seconds.")
-                await asyncio.sleep(120)
+        timeout = aiohttp.ClientTimeout(total=4)
+        async with session.get(url, timeout=timeout) as response:
+            if response.status != 200:
+                print(f"{label}: HTTP {response.status}")
                 return None
-
-            if response.status >= 400:
-                print(f"{label}: HTTP {response.status}: {text[:200]}")
-                await asyncio.sleep(60)
-                return None
-
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                print(f"{label}: non-JSON response: {text[:200]}")
-                await asyncio.sleep(60)
-                return None
-
+            return await response.json(content_type=None)
     except Exception as e:
-        print(f"{label}: API error:", e)
-        await asyncio.sleep(60)
-        return None
-
-
-async def safe_post_json(session, url, payload, label):
-    try:
-        async with session.post(url, json=payload, timeout=30) as response:
-            text = await response.text()
-
-            if response.status == 429:
-                print(f"{label}: rate limited, waiting 120 seconds.")
-                await asyncio.sleep(120)
-                return None
-
-            if response.status >= 400:
-                print(f"{label}: HTTP {response.status}: {text[:200]}")
-                await asyncio.sleep(60)
-                return None
-
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                print(f"{label}: non-JSON response: {text[:200]}")
-                await asyncio.sleep(60)
-                return None
-
-    except Exception as e:
-        print(f"{label}: API error:", e)
-        await asyncio.sleep(60)
+        print(f"{label}: API error: {e}")
         return None
 
 
@@ -208,6 +166,7 @@ async def eth_rpc_call(method, params, label):
 
 
 async def get_crypto_usd_price(coin):
+    coin = coin.lower()
     coin_ids = {
         "btc": "bitcoin",
         "ltc": "litecoin",
@@ -215,22 +174,65 @@ async def get_crypto_usd_price(coin):
         "sol": "solana",
         "usdt": "tether",
     }
+    symbols = {"btc": "BTC", "ltc": "LTC", "eth": "ETH", "sol": "SOL", "usdt": "USDT"}
 
-    coin_id = coin_ids.get(coin.lower())
-    if not coin_id:
+    coin_id = coin_ids.get(coin)
+    symbol = symbols.get(coin)
+    if not coin_id or not symbol:
         return None
 
-    async with aiohttp.ClientSession() as session:
+    timeout = aiohttp.ClientTimeout(total=4)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        # Primary: CoinGecko
         data = await safe_get_json(
             session,
             f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd",
-            "CoinGecko price"
+            "CoinGecko price",
         )
+        try:
+            price = data.get(coin_id, {}).get("usd") if isinstance(data, dict) else None
+            if price:
+                return float(price)
+        except Exception:
+            pass
 
-    if not isinstance(data, dict):
-        return None
+        # Fallback: CryptoCompare
+        data = await safe_get_json(
+            session,
+            f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD",
+            "CryptoCompare price",
+        )
+        try:
+            price = data.get("USD") if isinstance(data, dict) else None
+            if price:
+                return float(price)
+        except Exception:
+            pass
 
-    return data.get(coin_id, {}).get("usd")
+        # Final fallback: Binance ticker (not available for every coin/pair)
+        pair = f"{symbol}USDT"
+        data = await safe_get_json(
+            session,
+            f"https://api.binance.com/api/v3/ticker/price?symbol={pair}",
+            "Binance price",
+        )
+        try:
+            price = data.get("price") if isinstance(data, dict) else None
+            if price:
+                return float(price)
+        except Exception:
+            pass
+
+    # Emergency hardcoded fallback prices. These are only used if every
+    # live price API above is unavailable, so the bot never waits indefinitely.
+    fallback_prices = {
+        "btc": 78610.79,
+        "eth": 2495.89,
+        "sol": 104.12,
+        "ltc": 54.32,
+        "usdt": 1.00,
+    }
+    return fallback_prices.get(coin)
 
 
 # =========================
@@ -1552,6 +1554,26 @@ async def set_awaiting_confirmation(state: DealState):
     ))
 
 
+async def update_amount_with_usd(message, field_index, coin, amount):
+    """Fetch the USD value in the background, then update the already-sent embed."""
+    try:
+        usd = await amount_usd_text(coin, amount)
+        if not usd:
+            return
+        embed = message.embeds[0]
+        fields = list(embed.fields)
+        field = fields[field_index]
+        embed.set_field_at(
+            field_index,
+            name=field.name,
+            value=f"`{amount:.8f}` {COIN_SYMBOLS[coin]}{usd}",
+            inline=field.inline,
+        )
+        await message.edit(embed=embed)
+    except Exception as e:
+        print("USD price update error:", e)
+
+
 async def send_detected(state: DealState, coin, amount, tx_hash=None):
     await set_awaiting_confirmation(state)
     state.detected_txid = tx_hash or "Unknown"
@@ -1562,7 +1584,6 @@ async def send_detected(state: DealState, coin, amount, tx_hash=None):
         except discord.HTTPException:
             pass
 
-    usd = await amount_usd_text(coin, amount)
     embed = large_title_embed(
         "Transaction Detected",
         "Your payment has been detected on the network.\nPlease wait while it receives the required confirmations.",
@@ -1570,9 +1591,12 @@ async def send_detected(state: DealState, coin, amount, tx_hash=None):
     )
     embed.set_thumbnail(url=WAITING_GIF_URL)
     embed.add_field(name="Transaction", value=transaction_display(coin, state.detected_txid), inline=False)
-    embed.add_field(name="Amount Received", value=f"`{amount:.8f}` {COIN_SYMBOLS[coin]}{usd}", inline=False)
+    embed.add_field(name="Amount Received", value=f"`{amount:.8f}` {COIN_SYMBOLS[coin]}", inline=False)
     embed.add_field(name="Required Confirmations", value=f"`{REQUIRED_CONFIRMATIONS}`", inline=False)
     state.detected_message = await state.channel.send(embed=embed)
+
+    # Do the external USD-price lookup after the UI is already visible.
+    asyncio.create_task(update_amount_with_usd(state.detected_message, 1, coin, amount))
 
 
 async def send_confirmed(state: DealState, coin, amount, tx_hash=None):
@@ -1592,7 +1616,6 @@ async def send_confirmed(state: DealState, coin, amount, tx_hash=None):
             pass
         state.awaiting_message = None
 
-    usd = await amount_usd_text(coin, amount)
     received = large_title_embed(
         "✅ Payment Received",
         "The payment is now secured, and has reached the required amount of confirmations.",
@@ -1601,8 +1624,11 @@ async def send_confirmed(state: DealState, coin, amount, tx_hash=None):
     received.set_thumbnail(url=RECEIVED_GIF_URL)
     received.add_field(name="Transaction", value=transaction_display(coin, state.detected_txid), inline=False)
     received.add_field(name="Confirmations", value=f"`{REQUIRED_CONFIRMATIONS}`", inline=False)
-    received.add_field(name="Amount Received", value=f"`{amount:.8f}` {COIN_SYMBOLS[coin]}{usd}", inline=False)
+    received.add_field(name="Amount Received", value=f"`{amount:.8f}` {COIN_SYMBOLS[coin]}", inline=False)
     state.confirmed_message = await state.channel.send(embed=received)
+
+    # Do the external USD-price lookup after the payment UI is already visible.
+    asyncio.create_task(update_amount_with_usd(state.confirmed_message, 2, coin, amount))
 
     proceed = large_title_embed(
         "You may now proceed with the deal",
@@ -1879,8 +1905,9 @@ async def await_payment(
     if state is None:
         await interaction.response.send_message("❌ No active middleman deal state was found for that channel.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     await send_detected(state, coin.value, crypto_amount, txid)
-    await interaction.response.send_message(f"✅ Transaction detected UI sent in <#{channel.id}>.", ephemeral=True)
+    await interaction.followup.send(f"✅ Transaction detected UI sent in <#{channel.id}>.", ephemeral=True)
 
 
 @bot.tree.command(name="received", description="Manually show the payment-received UI in an active ticket.")
@@ -1909,8 +1936,9 @@ async def received(
     if state is None:
         await interaction.response.send_message("❌ No active middleman deal state was found for that channel.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     await send_confirmed(state, coin.value, crypto_amount, txid)
-    await interaction.response.send_message(f"✅ Payment received UI sent in <#{channel.id}>.", ephemeral=True)
+    await interaction.followup.send(f"✅ Payment received UI sent in <#{channel.id}>.", ephemeral=True)
 
 
 # =========================
