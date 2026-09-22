@@ -2008,35 +2008,4 @@ if not LTC_MNEMONIC:
     raise ValueError("LTC_MNEMONIC is missing from your .env file.")
 
 keep_alive()
-
-import random
-import time
-
-MAX_LOGIN_RETRIES = 5
-
-def run_with_backoff():
-    attempt = 0
-    while attempt < MAX_LOGIN_RETRIES:
-        try:
-            bot.run(DISCORD_TOKEN)
-            # bot.run() only returns after a clean shutdown; if it
-            # returns normally, don't loop forever retrying.
-            return
-        except discord.errors.HTTPException as e:
-            attempt += 1
-            if e.status == 429 or getattr(e, "code", None) == 0:
-                wait = min(60 * (2 ** attempt), 900) + random.uniform(0, 10)
-                print(f"[startup] Rate limited by Discord (attempt {attempt}/{MAX_LOGIN_RETRIES}). "
-                      f"Waiting {wait:.0f}s before retrying login.")
-                time.sleep(wait)
-            else:
-                print(f"[startup] Discord HTTPException: {e}. Waiting 30s before retrying.")
-                time.sleep(30)
-        except Exception as e:
-            attempt += 1
-            print(f"[startup] Unexpected error starting bot: {e}. Waiting 30s before retrying.")
-            time.sleep(30)
-    print("[startup] Giving up after too many failed login attempts. "
-          "Check for duplicate running instances or an invalid token.")
-
-run_with_backoff()
+bot.run(DISCORD_TOKEN)
